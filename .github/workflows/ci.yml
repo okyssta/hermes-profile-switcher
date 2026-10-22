@@ -1,0 +1,50 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Install
+        run: npm ci
+
+      - name: Type check
+        run: npm run check
+
+      - name: Test
+        run: npm test
+
+      # The built bundle is committed, so a drift between the source and the
+      # committed artifact is a real bug: the app loads the committed file.
+      - name: Verify the committed bundle is current
+        run: |
+          npm run build
+          if ! git diff --quiet -- profile-switcher/desktop/plugin.js; then
+            echo "::error::profile-switcher/desktop/plugin.js is out of date — run 'npm run build' and commit the result."
+            git diff -- profile-switcher/desktop/plugin.js
+            exit 1
+          fi
+
+  catalog:
+    # The catalog admission gate: the same check the Hermes plugin catalog
+    # CI runs against a candidate plugin.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Hermes Agent
+        run: curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash
+
+      - name: Validate the plugin
+        run: hermes plugins validate ./profile-switcher --install-deps
