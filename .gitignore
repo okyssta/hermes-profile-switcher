@@ -9,3 +9,6 @@ __pycache__/
 # need a build step) — so `desktop/plugin.js` is deliberately NOT ignored.
 # The local preview page is generated; only its PNG is committed.
 assets/preview.html
+
+# The catalog submission file lives in the hermes-agent repo, not here.
+plugin-catalog-entry.yaml
