@@ -73,6 +73,24 @@ declare module '@hermes/plugin-sdk' {
     subscribe(listener: (value: T, oldValue: T) => void): () => void
   }
 
+  /**
+   * A nanostores computed store: derived from one or more atoms and
+   * recomputed only when a dependency changes. The derive function receives
+   * the dependency values in the same order the stores were passed.
+   */
+  export function computed<A, T>(
+    stores: readonly [{ get(): A; subscribe(listener: (value: A, oldValue: A) => void): () => void }],
+    derive: (a: A) => T
+  ): { get(): T; subscribe(listener: (value: T, oldValue: T) => void): () => void }
+
+  export function computed<A, B, T>(
+    stores: readonly [
+      { get(): A; subscribe(listener: (value: A, oldValue: A) => void): () => void },
+      { get(): B; subscribe(listener: (value: B, oldValue: B) => void): () => void }
+    ],
+    derive: (a: A, b: B) => T
+  ): { get(): T; subscribe(listener: (value: T, oldValue: T) => void): () => void }
+
   /** The app's single React Query client, plus the hooks over it. */
   export function useQuery<T>(options: {
     queryKey: readonly unknown[]

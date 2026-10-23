@@ -18,9 +18,13 @@ import { fileURLToPath } from 'node:url'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { createElement } from 'react'
 
+// The plugin installs keyboard listeners on `window`; Node has no DOM, so
+// stand one in — the stub context records it instead of touching a target.
+globalThis.window ??= globalThis
+
 const HERE = dirname(fileURLToPath(import.meta.url))
 const ROOT = resolve(HERE, '..')
-const BUNDLE = resolve(ROOT, 'profile-switcher', 'desktop', 'plugin.js')
+const BUNDLE = resolve(ROOT, 'desktop', 'plugin.js')
 const OUT = resolve(process.argv[2] ?? resolve(ROOT, 'assets', 'preview.html'))
 
 /** The roster the preview shows — a realistic multi-profile setup. */
@@ -78,8 +82,36 @@ function makeSdkStub() {
     }
   }
 
+  const computed = (stores, derive) => {
+    const subs = new Set()
+    let value = derive(...stores.map(store => store.get()))
+
+    const recompute = () => {
+      const next = derive(...stores.map(store => store.get()))
+
+      if (!Object.is(next, value)) {
+        const old = value
+
+        value = next
+        subs.forEach(listener => listener(value, old))
+      }
+    }
+
+    stores.forEach(store => store.subscribe(recompute))
+
+    return {
+      get: () => value,
+      subscribe: listener => {
+        subs.add(listener)
+
+        return () => subs.delete(listener)
+      }
+    }
+  }
+
   return {
     atom,
+    computed,
     Badge: props => createElement('span', { className: 'badge' }, props.children),
     Codicon: props => createElement('span', { className: 'codicon', title: props.name }, '◆'),
     KEYBINDS_AREA: 'keybinds',
@@ -111,7 +143,7 @@ async function loadPlugin() {
 
   writeFileSync(
     resolve(dir, 'hermes-plugin-sdk-stub.mjs'),
-    `export const { atom, Badge, Codicon, KEYBINDS_AREA, PALETTE_AREA, PANES_AREA, STATUSBAR_AREAS, host, useQuery, useValue } = globalThis.__hermesStub
+    `export const { atom, computed, Badge, Codicon, KEYBINDS_AREA, PALETTE_AREA, PANES_AREA, STATUSBAR_AREAS, host, useQuery, useValue } = globalThis.__hermesStub
 `
   )
 
@@ -138,6 +170,7 @@ const ctx = {
   registerMany: list => {
     ctx.contributions = list
   },
+  addEventListener: () => () => undefined,
   register: () => () => undefined,
   registerSettingsPage: () => () => undefined,
   onDispose: () => undefined,
@@ -151,6 +184,10 @@ const keybind = ctx.contributions.find(contribution => contribution.area === 'ke
 
 // Open the switcher the way the keybind does.
 keybind.data.run()
+
+// The roster is fetched on open now, so let the request settle before the
+// panel is rendered — otherwise the preview shows an empty list.
+await new Promise(resolve => setTimeout(resolve, 0))
 
 const markup = renderToStaticMarkup(panel.render())
 

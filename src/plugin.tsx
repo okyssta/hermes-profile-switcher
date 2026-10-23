@@ -1,27 +1,32 @@
 /**
  * Profile switcher — a macOS-style quick switcher for Hermes profiles.
  *
- * The idea is the app switcher (⌘Tab): one chord opens a panel of every
- * profile, you move the highlight, and you land on the one you pick. Hermes
- * Desktop already ships positional profile hotkeys (⌘1…⌘9), but there is no
+ * The idea is the app switcher: one gesture opens a panel of every profile,
+ * you move the highlight, and you land on the one you pick. Hermes Desktop
+ * already ships positional profile hotkeys (⌘1…⌘9), but there is no
  * "browse every profile and jump to one" surface, and no chord for it at all.
  * That is the gap this plugin fills.
  *
- * Two surfaces:
+ * Two ways in:
  *
- *  1. A contributed keybind (⌥⌘P by default) opens the switcher.
- *  2. A status-bar chip naming the ACTIVE profile; clicking it opens the
- *     same switcher.
+ *  1. **The app-switcher gesture** — hold ⌃⌥ and tap Tab to cycle, release to
+ *     land. This is the Alt+Tab interaction. It cannot be bound to literal
+ *     Alt+Tab or Win+Tab: the OS owns those chords and never delivers them to
+ *     the renderer, which is why the gesture lives on `ctrl+alt+tab` — a chord
+ *     no OS and no Hermes core action claims.
+ *  2. **A contributed keybind** (⌥⌘P / ⌃⌥P) plus a status-bar chip, for a
+ *     single-press open with a click or the keyboard.
  *
  * The switch itself goes through `host.openSession` with an explicit profile,
  * which is the app's own profile-switch path: it activates that profile's
  * backend, scopes the chrome onto it, and lands on that profile's most recent
  * conversation. A profile with no conversation gets a fresh draft instead.
  *
- * State lives in module-level atoms (the SDK exports `atom`), NOT in React
- * hooks inside `register(ctx)` — `register` is not a component, so a hook
- * called there would throw. The hooks live in the components the plugin
- * registers, exactly like the app's own bundled plugins do.
+ * State lives in module-level atoms (the SDK exports `atom` / `computed`),
+ * NOT in React hooks inside `register(ctx)` — `register` is not a component,
+ * so a hook called there would throw. The keyboard listeners are installed
+ * through `ctx.addEventListener`, which the SDK tears down on reload/disable,
+ * so nothing keeps firing after the plugin goes away.
  */
 
 import {
@@ -32,10 +37,10 @@ import {
   PALETTE_AREA,
   STATUSBAR_AREAS,
   atom,
-  useQuery,
+  computed,
   useValue
 } from '@hermes/plugin-sdk'
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useRef } from 'react'
 
 import {
   buildRoster,
@@ -55,14 +60,30 @@ const $switcherOpen = atom(false)
 /** The typed filter (empty = show everything). */
 const $query = atom('')
 
+/** The last roster the gateway gave us. Cached so a re-press is instant. */
+const $roster = atom<ProfileRow[]>([])
+
+/** Which row is highlighted. */
+const $selected = atom(0)
+
+/**
+ * Was the panel opened by the hold-and-cycle gesture?
+ *
+ * Only then does releasing ⌃/⌥ commit. A panel opened with ⌃⌥P or the chip
+ * must NOT switch anything when the modifier is let go — the user is still
+ * choosing.
+ */
+const $holdMode = atom(false)
+
+/** The visible rows: the roster filtered by the query. */
+const $entries = computed([$roster, $query], (roster, query) => filterRoster(buildRoster(roster), query))
+
 /**
  * The plugin's own settings.
  *
  * `ctx.storage` is the plugin-scoped door (`hermes.plugin.<id>.<key>` in
- * localStorage), so these survive a reload without the plugin owning a
- * file or reading a credential store. The defaults here MUST match the
- * `config_schema` defaults in plugin.yaml — a schema key the plugin does not
- * read is a setting that silently does nothing.
+ * localStorage), so these survive a reload without the plugin owning a file
+ * or reading a credential store.
  */
 interface Settings {
   showModel: boolean
@@ -80,10 +101,10 @@ const $settings = atom<Settings>(DEFAULT_SETTINGS)
 /**
  * The storage door.
  *
- * `ctx.storage` is only available inside `register(ctx)`, so the module
- * keeps a reference to it. It is null before registration and after
- * teardown, and every read/write tolerates that — the plugin renders fine
- * with the defaults when the door is absent.
+ * `ctx.storage` is only available inside `register(ctx)`, so the module keeps
+ * a reference to it. It is null before registration and after teardown, and
+ * every read/write tolerates that — the plugin renders fine with the defaults
+ * when the door is absent.
  */
 let storage: { get<T>(key: string, fallback: T): T; set(key: string, value: unknown): void } | null = null
 
@@ -120,33 +141,153 @@ function writeSettings(settings: Settings): void {
 }
 
 /**
- * The roster query key.
+ * Load the roster.
  *
  * `profiles.list` is the gateway's own roster call: every profile with its
  * model, skill count, and — because `include_sessions` defaults on — the
  * newest conversation per profile. It is the same call the app's own profile
  * rail and the Bots roster use, so this list is always the app's list.
+ *
+ * Fetched on open, never on a timer: a plugin that polls the gateway is a
+ * background process the user never asked for. Concurrent calls share one
+ * in-flight request, so mashing the gesture does not open a socket per tap.
  */
-const ROSTER_KEY = [ID, 'roster']
+let inflight: Promise<void> | null = null
 
-async function fetchRoster(): Promise<ProfileRow[]> {
-  const result = (await host.request('profiles.list', { include_sessions: true })) as {
-    profiles?: ProfileRow[]
+function refreshRoster(): Promise<void> {
+  if (inflight) {
+    return inflight
   }
 
-  return Array.isArray(result?.profiles) ? result.profiles : []
+  inflight = (async () => {
+    try {
+      const result = (await host.request('profiles.list', { include_sessions: true })) as {
+        profiles?: ProfileRow[]
+      }
+
+      $roster.set(Array.isArray(result?.profiles) ? result.profiles : [])
+    } catch {
+      // Keep the last good roster: a transient gateway error should not
+      // empty a panel the user is mid-gesture in.
+    }
+  })().finally(() => {
+    inflight = null
+  })
+
+  return inflight
 }
 
-/** Open the switcher. */
+/** The profile the live gateway is actually routed to. */
+function activeProfileName(): string {
+  return host.state.profile.get()
+}
+
+/** Open the switcher with the highlight on the profile you are already in. */
 function openSwitcher(): void {
   $query.set('')
+  $holdMode.set(false)
+  pendingCycle = null
+  void refreshRoster()
+
+  const entries = $entries.get()
+  const index = indexOfProfile(entries, activeProfileName())
+
+  $selected.set(index >= 0 ? index : 0)
   $switcherOpen.set(true)
+}
+
+/**
+ * A cycle requested before the roster was known.
+ *
+ * The gesture can fire before `profiles.list` returns, and the "next profile"
+ * answer depends on where the highlight started. Remembering the direction
+ * lets us seat the highlight correctly once the rows arrive instead of
+ * defaulting to the first row.
+ */
+let pendingCycle: 1 | -1 | null = null
+
+/** Seat the highlight relative to the active profile, then step once. */
+function seatAndAdvance(): void {
+  const direction = pendingCycle ?? 1
+
+  pendingCycle = null
+
+  const entries = $entries.get()
+
+  if (entries.length === 0) {
+    return
+  }
+
+  const index = indexOfProfile(entries, activeProfileName())
+
+  $selected.set(nextIndex(index >= 0 ? index : -1, direction, entries.length))
+}
+
+/**
+ * The app-switcher gesture: `⇥` while ⌃⌥ is held.
+ *
+ * The first tap opens the panel and moves OFF the current profile — exactly
+ * what Alt+Tab does. Later taps wrap around the list.
+ */
+function cycle(direction: 1 | -1): void {
+  if ($switcherOpen.get()) {
+    advance(direction)
+
+    return
+  }
+
+  $query.set('')
+  $holdMode.set(true)
+  pendingCycle = direction
+  $switcherOpen.set(true)
+
+  if ($entries.get().length > 0) {
+    // Warm cache: seat now so the panel appears already on the right row, and
+    // refresh in the background so the list is current.
+    seatAndAdvance()
+    void refreshRoster()
+  } else {
+    void refreshRoster().then(seatAndAdvance)
+  }
+}
+
+/** Move the highlight, wrapping at both ends. */
+function advance(direction: 1 | -1): void {
+  const length = $entries.get().length
+
+  if (length === 0) {
+    return
+  }
+
+  $selected.set(nextIndex($selected.get(), direction, length))
 }
 
 /** Close the switcher. */
 function closeSwitcher(): void {
   $switcherOpen.set(false)
+  $holdMode.set(false)
   $query.set('')
+}
+
+/**
+ * Land on the highlighted profile.
+ *
+ * Awaits the roster if the gesture outran the fetch, so a fast tap-and-release
+ * still lands somewhere rather than doing nothing.
+ */
+async function commitSelected(): Promise<void> {
+  if (pendingCycle !== null) {
+    await refreshRoster()
+    seatAndAdvance()
+  } else if ($roster.get().length === 0) {
+    await refreshRoster()
+  }
+
+  const entry = $entries.get()[$selected.get()]
+
+  if (entry) {
+    pickProfile(entry)
+  }
 }
 
 /** Relative "last active" label — "now", "4m", "3h", "2d", else a date. */
@@ -195,8 +336,8 @@ function relativeLabel(epochMs: number): string {
  * conversation; a profile with no conversation gets a fresh draft.
  *
  * `keepAllProfilesScope: false` is what makes this a real SWITCH rather than
- * a background dial: the sidebar collapses onto the target profile instead
- * of staying in the all-profiles browse view.
+ * a background dial: the sidebar collapses onto the target profile instead of
+ * staying in the all-profiles browse view.
  */
 function pickProfile(entry: RosterEntry): void {
   closeSwitcher()
@@ -299,40 +440,19 @@ function ProfileRowView({
  * Rendered as a floating pane: it sits ABOVE the app's own surfaces (a
  * session, the settings page) instead of taking a slot in the layout tree.
  * That is what an overlay is — this is not a workspace.
+ *
+ * It is render-only. Every keystroke is handled by the listeners `register`
+ * installs, so there is exactly one owner of the gesture and no chance of a
+ * double-advance when the panel's own listener and the app's disagree.
  */
 function SwitcherPanel() {
   const open = useValue($switcherOpen)
-  const query = useValue($query)
+  const entries = useValue($entries)
+  const selected = useValue($selected)
   const settings = useValue($settings)
   const activeProfile = useValue(host.state.profile)
 
-  // The roster is fetched when the panel opens, not on a timer: a plugin
-  // that polls the gateway every few seconds is a background process the
-  // user never asked for. React Query keeps the last roster cached, so a
-  // reopen is instant and a cold open costs one request.
-  const { data } = useQuery({
-    queryFn: fetchRoster,
-    queryKey: ROSTER_KEY,
-    staleTime: 15_000
-  })
-
-  const roster = useMemo(() => buildRoster(data ?? []), [data])
-  const entries = useMemo(() => filterRoster(roster, query), [roster, query])
-
-  const [selected, setSelected] = useState(0)
   const listRef = useRef<HTMLDivElement>(null)
-
-  // Start the highlight on the ACTIVE profile, so the first Tab moves off it
-  // rather than jumping to the top of the list.
-  useEffect(() => {
-    if (!open) {
-      return
-    }
-
-    const index = indexOfProfile(entries, activeProfile)
-
-    setSelected(index >= 0 ? index : 0)
-  }, [activeProfile, entries, open])
 
   // Keep the highlighted row in view when the selection moves.
   useEffect(() => {
@@ -342,55 +462,6 @@ function SwitcherPanel() {
 
     listRef.current?.querySelector('[data-selected="true"]')?.scrollIntoView({ block: 'nearest' })
   }, [open, selected])
-
-  const move = useCallback(
-    (direction: 1 | -1) => {
-      setSelected(current => nextIndex(current, direction, entries.length))
-    },
-    [entries.length]
-  )
-
-  const commit = useCallback(() => {
-    const entry = entries[selected]
-
-    if (entry) {
-      pickProfile(entry)
-    }
-  }, [entries, selected])
-
-  // Arrow / Tab navigation and Enter-to-commit live here rather than on the
-  // app's keybind layer, because the app's dispatcher owns Tab for its own
-  // surfaces and the plugin's own panel has to win while it is open.
-  useEffect(() => {
-    if (!open) {
-      return undefined
-    }
-
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === 'ArrowDown' || (event.key === 'Tab' && !event.shiftKey)) {
-        event.preventDefault()
-        move(1)
-
-        return
-      }
-
-      if (event.key === 'ArrowUp' || (event.key === 'Tab' && event.shiftKey)) {
-        event.preventDefault()
-        move(-1)
-
-        return
-      }
-
-      if (event.key === 'Enter') {
-        event.preventDefault()
-        commit()
-      }
-    }
-
-    window.addEventListener('keydown', onKeyDown, { capture: true })
-
-    return () => window.removeEventListener('keydown', onKeyDown, { capture: true })
-  }, [commit, move, open])
 
   if (!open) {
     return null
@@ -409,12 +480,14 @@ function SwitcherPanel() {
       >
         <div className="flex items-center justify-between gap-2 border-b border-(--ui-stroke-secondary) px-3 py-2">
           <span className="text-[0.8125rem] font-medium text-(--ui-text-primary)">Switch profile</span>
-          <span className="text-[0.6875rem] text-(--ui-text-quaternary)">↑↓ move · Enter switch · Esc cancel</span>
+          <span className="text-[0.6875rem] text-(--ui-text-quaternary)">
+            ⌃⌥+Tab to cycle · Enter switch · Esc cancel
+          </span>
         </div>
         <div className="max-h-[min(24rem,60vh)] overflow-y-auto p-1" ref={listRef}>
           {entries.length === 0 ? (
             <div className="px-3 py-6 text-center text-[0.8125rem] text-(--ui-text-quaternary)">
-              {query ? `No profile matches "${query}"` : 'No profiles found'}
+              No profiles found
             </div>
           ) : (
             entries.map((entry, index) => (
@@ -510,7 +583,7 @@ export default {
   id: ID,
   name: 'Profile Switcher',
   description:
-    'A macOS-style quick switcher for Hermes profiles: one chord opens a panel of every profile, with its model and last conversation, and lands you on the one you pick.',
+    'An app-switcher for Hermes profiles: hold ⌃⌥ and tap Tab to cycle, release to land. Also ⌥⌘P, a status-bar chip, and a palette command.',
   defaultEnabled: false,
   register(ctx: any) {
     // Seed the settings from the plugin's own storage door.
@@ -565,6 +638,93 @@ export default {
         }
       }
     ])
+
+    /*
+     * The app-switcher gesture.
+     *
+     * `ctrl+alt+tab` rather than `alt+tab` because the OS owns Alt+Tab (and
+     * Win+Tab, and ⌘Tab): those keystrokes are consumed by the window manager
+     * before the renderer sees them, so no in-app binding can ever fire. This
+     * chord is unclaimed by both the OS and Hermes core.
+     *
+     * `ctx.addEventListener` is scoped: the SDK removes these on reload,
+     * disable, and teardown, so a disabled plugin keeps no keyboard hooks.
+     */
+    if (typeof ctx.addEventListener === 'function') {
+      ctx.addEventListener(
+        window,
+        'keydown',
+        (event: KeyboardEvent) => {
+          // Hold ⌃⌥, tap Tab to cycle. Ignore auto-repeat: one tap, one step.
+          if (event.ctrlKey && event.altKey && event.code === 'Tab') {
+            event.preventDefault()
+            event.stopPropagation()
+
+            if (!event.repeat) {
+              cycle(event.shiftKey ? -1 : 1)
+            }
+
+            return
+          }
+
+          if (!$switcherOpen.get()) {
+            return
+          }
+
+          if (event.key === 'Tab') {
+            event.preventDefault()
+            advance(event.shiftKey ? -1 : 1)
+
+            return
+          }
+
+          if (event.key === 'ArrowDown') {
+            event.preventDefault()
+            advance(1)
+
+            return
+          }
+
+          if (event.key === 'ArrowUp') {
+            event.preventDefault()
+            advance(-1)
+
+            return
+          }
+
+          if (event.key === 'Enter') {
+            event.preventDefault()
+            void commitSelected()
+
+            return
+          }
+
+          if (event.key === 'Escape') {
+            event.preventDefault()
+            closeSwitcher()
+          }
+        },
+        { capture: true }
+      )
+
+      // Land on the highlighted profile when ⌃ or ⌥ is released — the
+      // "release to switch" half of the gesture. Only for a gesture-opened
+      // panel: ⌃⌥P and the chip stay put until you pick.
+      ctx.addEventListener(
+        window,
+        'keyup',
+        (event: KeyboardEvent) => {
+          if (!$switcherOpen.get() || !$holdMode.get()) {
+            return
+          }
+
+          if (event.key === 'Control' || event.key === 'Alt') {
+            void commitSelected()
+          }
+        },
+        { capture: true }
+      )
+    }
 
     // Settings ▸ Plugins page. `ctx.registerSettingsPage` is the app's own
     // settings seam — the page appears under the plugin's own entry.

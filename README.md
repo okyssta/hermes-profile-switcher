@@ -13,15 +13,25 @@ highlight, and you land in the one you pick.
 
 ## What it does
 
+- **Alt+Tab for profiles.** Hold **⌃⌥** and tap **Tab** to cycle through your
+  profiles, then let go to land on the highlighted one — the same
+  hold-tap-release rhythm as the OS app switcher.
+
+  > **Why not literal Alt+Tab?** The operating system owns Alt+Tab (and Win+Tab,
+  > and ⌘Tab). Those keystrokes are consumed by the window manager before any
+  > application sees them, so *no* app — Electron apps included — can bind
+  > them. ⌃⌥+Tab is the closest chord the OS leaves to applications, and
+  > nothing in Hermes core claims it.
+
 - **One chord opens the switcher.** ⌥⌘P by default (⌃⌥P on Linux/Windows).
   It is a *contributed* keybind, so it shows up in the app's own **Keybind
   panel** — rebind it, or clear it, like any other shortcut.
 - **Every profile, with context.** Each row shows the profile name, the model
   it runs, how long ago it was last active, and the title of its most recent
   conversation. A profile with a worker running shows a spinner.
-- **Keyboard-driven.** ↑ ↓ (or Tab / ⇧Tab) move the highlight, Enter switches,
-  Esc cancels. The highlight starts on the profile you are already in, so the
-  first press moves you *off* it rather than to the top of the list.
+- **Keyboard-driven.** Hold ⌃⌥ and tap Tab (or ↑ ↓) to move, Enter switches,
+  Esc cancels. The first tap moves you *off* the profile you are already in,
+  exactly like Alt+Tab, so you are switching rather than re-selecting.
 - **A status-bar chip** names the active profile and opens the same panel on
   click — a second, discoverable door for people who never learn the chord.
 - **The switch is a real switch.** It goes through the Desktop's own profile

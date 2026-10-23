@@ -7,10 +7,10 @@ import {
   PALETTE_AREA,
   STATUSBAR_AREAS,
   atom,
-  useQuery,
+  computed,
   useValue
 } from "@hermes/plugin-sdk";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useRef } from "react";
 
 // src/roster.ts
 function normalizeProfileKey(name) {
@@ -95,6 +95,10 @@ import { jsx, jsxs } from "react/jsx-runtime";
 var ID = "profile-switcher";
 var $switcherOpen = atom(false);
 var $query = atom("");
+var $roster = atom([]);
+var $selected = atom(0);
+var $holdMode = atom(false);
+var $entries = computed([$roster, $query], (roster, query) => filterRoster(buildRoster(roster), query));
 var DEFAULT_SETTINGS = {
   showModel: true,
   showLastSession: true
@@ -122,18 +126,85 @@ function writeSettings(settings) {
   } catch {
   }
 }
-var ROSTER_KEY = [ID, "roster"];
-async function fetchRoster() {
-  const result = await host.request("profiles.list", { include_sessions: true });
-  return Array.isArray(result?.profiles) ? result.profiles : [];
+var inflight = null;
+function refreshRoster() {
+  if (inflight) {
+    return inflight;
+  }
+  inflight = (async () => {
+    try {
+      const result = await host.request("profiles.list", { include_sessions: true });
+      $roster.set(Array.isArray(result?.profiles) ? result.profiles : []);
+    } catch {
+    }
+  })().finally(() => {
+    inflight = null;
+  });
+  return inflight;
+}
+function activeProfileName() {
+  return host.state.profile.get();
 }
 function openSwitcher() {
   $query.set("");
+  $holdMode.set(false);
+  pendingCycle = null;
+  void refreshRoster();
+  const entries = $entries.get();
+  const index = indexOfProfile(entries, activeProfileName());
+  $selected.set(index >= 0 ? index : 0);
   $switcherOpen.set(true);
+}
+var pendingCycle = null;
+function seatAndAdvance() {
+  const direction = pendingCycle ?? 1;
+  pendingCycle = null;
+  const entries = $entries.get();
+  if (entries.length === 0) {
+    return;
+  }
+  const index = indexOfProfile(entries, activeProfileName());
+  $selected.set(nextIndex(index >= 0 ? index : -1, direction, entries.length));
+}
+function cycle(direction) {
+  if ($switcherOpen.get()) {
+    advance(direction);
+    return;
+  }
+  $query.set("");
+  $holdMode.set(true);
+  pendingCycle = direction;
+  $switcherOpen.set(true);
+  if ($entries.get().length > 0) {
+    seatAndAdvance();
+    void refreshRoster();
+  } else {
+    void refreshRoster().then(seatAndAdvance);
+  }
+}
+function advance(direction) {
+  const length = $entries.get().length;
+  if (length === 0) {
+    return;
+  }
+  $selected.set(nextIndex($selected.get(), direction, length));
 }
 function closeSwitcher() {
   $switcherOpen.set(false);
+  $holdMode.set(false);
   $query.set("");
+}
+async function commitSelected() {
+  if (pendingCycle !== null) {
+    await refreshRoster();
+    seatAndAdvance();
+  } else if ($roster.get().length === 0) {
+    await refreshRoster();
+  }
+  const entry = $entries.get()[$selected.get()];
+  if (entry) {
+    pickProfile(entry);
+  }
 }
 function relativeLabel(epochMs) {
   if (!epochMs) {
@@ -232,66 +303,17 @@ function ProfileRowView({
 }
 function SwitcherPanel() {
   const open = useValue($switcherOpen);
-  const query = useValue($query);
+  const entries = useValue($entries);
+  const selected = useValue($selected);
   const settings = useValue($settings);
   const activeProfile = useValue(host.state.profile);
-  const { data } = useQuery({
-    queryFn: fetchRoster,
-    queryKey: ROSTER_KEY,
-    staleTime: 15e3
-  });
-  const roster = useMemo(() => buildRoster(data ?? []), [data]);
-  const entries = useMemo(() => filterRoster(roster, query), [roster, query]);
-  const [selected, setSelected] = useState(0);
   const listRef = useRef(null);
-  useEffect(() => {
-    if (!open) {
-      return;
-    }
-    const index = indexOfProfile(entries, activeProfile);
-    setSelected(index >= 0 ? index : 0);
-  }, [activeProfile, entries, open]);
   useEffect(() => {
     if (!open) {
       return;
     }
     listRef.current?.querySelector('[data-selected="true"]')?.scrollIntoView({ block: "nearest" });
   }, [open, selected]);
-  const move = useCallback(
-    (direction) => {
-      setSelected((current) => nextIndex(current, direction, entries.length));
-    },
-    [entries.length]
-  );
-  const commit = useCallback(() => {
-    const entry = entries[selected];
-    if (entry) {
-      pickProfile(entry);
-    }
-  }, [entries, selected]);
-  useEffect(() => {
-    if (!open) {
-      return void 0;
-    }
-    const onKeyDown = (event) => {
-      if (event.key === "ArrowDown" || event.key === "Tab" && !event.shiftKey) {
-        event.preventDefault();
-        move(1);
-        return;
-      }
-      if (event.key === "ArrowUp" || event.key === "Tab" && event.shiftKey) {
-        event.preventDefault();
-        move(-1);
-        return;
-      }
-      if (event.key === "Enter") {
-        event.preventDefault();
-        commit();
-      }
-    };
-    window.addEventListener("keydown", onKeyDown, { capture: true });
-    return () => window.removeEventListener("keydown", onKeyDown, { capture: true });
-  }, [commit, move, open]);
   if (!open) {
     return null;
   }
@@ -308,9 +330,9 @@ function SwitcherPanel() {
         children: [
           /* @__PURE__ */ jsxs("div", { className: "flex items-center justify-between gap-2 border-b border-(--ui-stroke-secondary) px-3 py-2", children: [
             /* @__PURE__ */ jsx("span", { className: "text-[0.8125rem] font-medium text-(--ui-text-primary)", children: "Switch profile" }),
-            /* @__PURE__ */ jsx("span", { className: "text-[0.6875rem] text-(--ui-text-quaternary)", children: "\u2191\u2193 move \xB7 Enter switch \xB7 Esc cancel" })
+            /* @__PURE__ */ jsx("span", { className: "text-[0.6875rem] text-(--ui-text-quaternary)", children: "\u2303\u2325+Tab to cycle \xB7 Enter switch \xB7 Esc cancel" })
           ] }),
-          /* @__PURE__ */ jsx("div", { className: "max-h-[min(24rem,60vh)] overflow-y-auto p-1", ref: listRef, children: entries.length === 0 ? /* @__PURE__ */ jsx("div", { className: "px-3 py-6 text-center text-[0.8125rem] text-(--ui-text-quaternary)", children: query ? `No profile matches "${query}"` : "No profiles found" }) : entries.map((entry, index) => /* @__PURE__ */ jsx(
+          /* @__PURE__ */ jsx("div", { className: "max-h-[min(24rem,60vh)] overflow-y-auto p-1", ref: listRef, children: entries.length === 0 ? /* @__PURE__ */ jsx("div", { className: "px-3 py-6 text-center text-[0.8125rem] text-(--ui-text-quaternary)", children: "No profiles found" }) : entries.map((entry, index) => /* @__PURE__ */ jsx(
             ProfileRowView,
             {
               active: entry.name.toLowerCase() === activeProfile.toLowerCase(),
@@ -385,7 +407,7 @@ function SettingsPage() {
 var plugin_default = {
   id: ID,
   name: "Profile Switcher",
-  description: "A macOS-style quick switcher for Hermes profiles: one chord opens a panel of every profile, with its model and last conversation, and lands you on the one you pick.",
+  description: "An app-switcher for Hermes profiles: hold \u2303\u2325 and tap Tab to cycle, release to land. Also \u2325\u2318P, a status-bar chip, and a palette command.",
   defaultEnabled: false,
   register(ctx) {
     storage = ctx.storage ?? null;
@@ -438,6 +460,63 @@ var plugin_default = {
         }
       }
     ]);
+    if (typeof ctx.addEventListener === "function") {
+      ctx.addEventListener(
+        window,
+        "keydown",
+        (event) => {
+          if (event.ctrlKey && event.altKey && event.code === "Tab") {
+            event.preventDefault();
+            event.stopPropagation();
+            if (!event.repeat) {
+              cycle(event.shiftKey ? -1 : 1);
+            }
+            return;
+          }
+          if (!$switcherOpen.get()) {
+            return;
+          }
+          if (event.key === "Tab") {
+            event.preventDefault();
+            advance(event.shiftKey ? -1 : 1);
+            return;
+          }
+          if (event.key === "ArrowDown") {
+            event.preventDefault();
+            advance(1);
+            return;
+          }
+          if (event.key === "ArrowUp") {
+            event.preventDefault();
+            advance(-1);
+            return;
+          }
+          if (event.key === "Enter") {
+            event.preventDefault();
+            void commitSelected();
+            return;
+          }
+          if (event.key === "Escape") {
+            event.preventDefault();
+            closeSwitcher();
+          }
+        },
+        { capture: true }
+      );
+      ctx.addEventListener(
+        window,
+        "keyup",
+        (event) => {
+          if (!$switcherOpen.get() || !$holdMode.get()) {
+            return;
+          }
+          if (event.key === "Control" || event.key === "Alt") {
+            void commitSelected();
+          }
+        },
+        { capture: true }
+      );
+    }
     if (typeof ctx.registerSettingsPage === "function") {
       ctx.registerSettingsPage({
         id: "settings",
