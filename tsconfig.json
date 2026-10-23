@@ -14,5 +14,5 @@
     "isolatedModules": true,
     "types": []
   },
-  "include": ["profile-switcher/src/**/*.ts", "profile-switcher/src/**/*.tsx"]
+  "include": ["src/**/*.ts", "src/**/*.tsx"]
 }

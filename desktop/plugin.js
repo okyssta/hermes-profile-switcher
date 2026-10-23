@@ -1,4 +1,4 @@
-// profile-switcher/src/plugin.tsx
+// src/plugin.tsx
 import {
   Badge,
   Codicon,
@@ -12,7 +12,7 @@ import {
 } from "@hermes/plugin-sdk";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
-// profile-switcher/src/roster.ts
+// src/roster.ts
 function normalizeProfileKey(name) {
   return (name ?? "").trim().toLowerCase();
 }
@@ -90,7 +90,7 @@ function filterRoster(entries, query) {
   );
 }
 
-// profile-switcher/src/plugin.tsx
+// src/plugin.tsx
 import { jsx, jsxs } from "react/jsx-runtime";
 var ID = "profile-switcher";
 var $switcherOpen = atom(false);

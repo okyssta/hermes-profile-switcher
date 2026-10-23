@@ -30,9 +30,9 @@ jobs:
       - name: Verify the committed bundle is current
         run: |
           npm run build
-          if ! git diff --quiet -- profile-switcher/desktop/plugin.js; then
-            echo "::error::profile-switcher/desktop/plugin.js is out of date — run 'npm run build' and commit the result."
-            git diff -- profile-switcher/desktop/plugin.js
+          if ! git diff --quiet -- desktop/plugin.js; then
+            echo "::error::desktop/plugin.js is out of date — run 'npm run build' and commit the result."
+            git diff -- desktop/plugin.js
             exit 1
           fi
 
@@ -47,4 +47,4 @@ jobs:
         run: curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash
 
       - name: Validate the plugin
-        run: hermes plugins validate ./profile-switcher --install-deps
+        run: hermes plugins validate . --install-deps

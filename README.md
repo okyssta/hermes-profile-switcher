@@ -43,11 +43,16 @@ within a few seconds. Flip the switch in **Capabilities → Plugins** to enable
 it — the plugin ships **off by default**, so it never claims a chord you did
 not ask for.
 
-To install from a checkout of this repository:
+To install from this repository directly:
 
 ```bash
-hermes plugins install okyssta/hermes-profile-switcher#profile-switcher
+hermes plugins install okyssta/hermes-profile-switcher
 ```
+
+Or paste `https://github.com/okyssta/hermes-profile-switcher` into Hermes
+Desktop → **Capabilities → Plugins → Install from source**. The plugin lives at
+the repository root (`plugin.yaml` + `desktop/plugin.js`), which is what both
+installers scan for.
 
 ## Settings
 
@@ -78,16 +83,20 @@ it does nothing in the CLI or on a messaging platform.
 ## Layout
 
 ```
-profile-switcher/               ← the plugin (this is what installs)
-├── plugin.yaml                 ← manifest
-├── __init__.py                 ← the no-op agent half the loader requires
-├── desktop/plugin.js           ← the loadable artifact: plain ESM, built
-└── src/                        ← the TSX source it is built from
-    ├── plugin.tsx
-    ├── roster.ts               ← the pure roster helpers (unit-tested)
-    └── sdk.d.ts                ← ambient types for the plugin SDK
+plugin.yaml                     ← manifest
+__init__.py                     ← the no-op agent half the loader requires
+desktop/plugin.js               ← the loadable artifact: plain ESM, built
+src/                            ← the TSX source it is built from
+  plugin.tsx
+  roster.ts                     ← the pure roster helpers (unit-tested)
+  sdk.d.ts                      ← ambient types for the plugin SDK
 tests/                          ← unit tests + a load-and-register harness
 ```
+
+The plugin is at the repository ROOT, not in a subdirectory: the Desktop app's
+"Install from source" dialog only scans the repo root for `plugin.js` or
+`desktop/plugin.js`, and `hermes plugins install <owner>/<repo>` resolves the
+same way.
 
 ## Build
 

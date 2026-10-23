@@ -8,7 +8,7 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
 
-import { buildRoster, filterRoster, indexOfProfile, nextIndex, normalizeProfileKey } from '../profile-switcher/src/roster.ts'
+import { buildRoster, filterRoster, indexOfProfile, nextIndex, normalizeProfileKey } from '../src/roster.ts'
 
 test('normalizeProfileKey trims and lowercases', () => {
   assert.equal(normalizeProfileKey('  Research  '), 'research')

@@ -29,7 +29,7 @@ import { createElement } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
-const BUNDLE = resolve(HERE, '..', 'profile-switcher', 'desktop', 'plugin.js')
+const BUNDLE = resolve(HERE, '..', 'desktop', 'plugin.js')
 
 /** The three specifiers the Desktop loader resolves — nothing else. */
 const ALLOWED_IMPORTS = new Set(['@hermes/plugin-sdk', 'react', 'react/jsx-runtime'])
